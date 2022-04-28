@@ -4,6 +4,12 @@ from LaPy.lapy import Solver
 from scipy.io import savemat
 from pathlib import Path
 from copy import deepcopy
+from sklearn.preprocessing import MinMaxScaler
+class CriticalPoint:
+    def __init__(self, vertex,embedding,color = -1):
+        self.vertex =vertex
+        self.color = color
+        self.embedding = embedding
 
 class Segmenter:
     def __init__(self, off_filename):
@@ -13,7 +19,9 @@ class Segmenter:
         self.num_verts = self.vertices.shape[0]
         self.num_tris = self.triangles.shape[0]
         self.eigenvalues, self.eigenfunctions = Solver(self.mesh).eigs()
-        self.efunc_one = self.eigenfunctions[:, 1]
+        scaler = MinMaxScaler(feature_range=(-1,1))
+        self.eigenfunctions = scaler.fit_transform(self.eigenfunctions)
+
         self.all_mins = []
         self.all_maxes = []
         self.all_saddles = []
@@ -23,14 +31,18 @@ class Segmenter:
         self.selected_maxes = []
         self.selected_saddles = []
         self.selected_extremum = []
+        self.boundary_triangles = []
 
         self.persistance_pairs = []
         self.noise_removal_steps = {}
         self.colors = np.zeros((self.num_tris, 1))
         self.allcolors = np.zeros((self.num_tris,1))
         self.spectral_colors = {}
+        self.crit_embeddings = {}
+        self.crits=[]
 
         ### Visualization Tools
+        self.isbasemesh = True
         self.animate_colors = False
         assert self.mesh.is_oriented()
 
@@ -44,18 +56,44 @@ class Segmenter:
         if name:
             self.save_to_matlab(name)
         landmark_dict = self.get_landmarks()
-        print(landmark_dict)
+        #print(landmark_dict)
+        return landmark_dict
+    def flip_eigenfunctions(self, base_mesh):
+        '''
+        Pseudocode
+        For Each eigenfunction of the current mesh
+            Find max location of that efunc and of the flipped efunc... find max location of that efunc on the other mesh
+            if the vtx distance is closer with the other efunc and within a certain distance (if they get switched somehow)
+            then flip it!
+
+        :param base_mesh:
+        :return:
+        '''
+        for i in range(self.eigenfunctions.shape[1]):
+            if i==0:
+                continue
+            max_on_base_shape = base_mesh.vertices[np.argmax(base_mesh.eigenfunctions[:,i])]
+            max_on_current_shape = self.vertices[np.argmax(self.eigenfunctions[:,i])]
+            flipped_max_on_current_shape = self.vertices[np.argmax(-1*self.eigenfunctions[:,i])]
+
+            main_dist = np.linalg.norm(max_on_base_shape-max_on_current_shape)
+            flipped_dist = np.linalg.norm(max_on_base_shape-flipped_max_on_current_shape)
+            if flipped_dist<main_dist:
+                self.eigenfunctions[:,i] = -1 * self.eigenfunctions[:,i]
+        self.eigenfunctions[:,2] = -1 * self.eigenfunctions[:,2]
+
+
 
     def get_min_max_saddles(self):
         for vtx in range(self.num_verts):
             # For each vertex, get neighbors and see if its a min,max or saddle
             adj_idx_efunc_vals = self.get_adjacent_vtx_efunc_vals(vtx)
 
-            if self.efunc_one[vtx] >= np.max(adj_idx_efunc_vals):
+            if self.eigenfunctions[:,1][vtx] >= np.max(adj_idx_efunc_vals):
                 self.all_maxes.append(vtx)
-            elif self.efunc_one[vtx] <= np.min(adj_idx_efunc_vals):
+            elif self.eigenfunctions[:,1][vtx] <= np.min(adj_idx_efunc_vals):
                 self.all_mins.append(vtx)
-            elif self.is_saddle(self.efunc_one[vtx], adj_idx_efunc_vals):
+            elif self.is_saddle(self.eigenfunctions[:,1][vtx], adj_idx_efunc_vals):
                 self.all_saddles.append(vtx)
             else:
                 pass
@@ -65,15 +103,15 @@ class Segmenter:
         pp = []
         for saddle in self.all_saddles:
             for ccw in self.get_ccw_neighbor_vtxs(saddle):
-                if self.efunc_one[ccw] >= self.efunc_one[saddle]:
+                if self.eigenfunctions[:,1][ccw] >= self.eigenfunctions[:,1][saddle]:
                     path = self.find_path(ccw, "up")
                     path.insert(0, saddle)
-                    pp.append((saddle, path[-1], np.abs(self.efunc_one[saddle] - self.efunc_one[path[-1]])))
+                    pp.append((saddle, path[-1], np.abs(self.eigenfunctions[:,1][saddle] - self.eigenfunctions[:,1][path[-1]])))
 
                 else:
                     path = self.find_path(ccw, "down")
                     path.insert(0, saddle)
-                    pp.append((saddle, path[-1], np.abs(self.efunc_one[saddle] - self.efunc_one[path[-1]])))
+                    pp.append((saddle, path[-1], np.abs(self.eigenfunctions[:,1][saddle] - self.eigenfunctions[:,1][path[-1]])))
         pp = np.array([[a, b, c] for a, b, c in pp])
         pp = np.unique(pp, axis=0)
         self.persistance_pairs = pp
@@ -119,8 +157,10 @@ class Segmenter:
         self.selected_mins = [int(val) for val in np.unique(persistance_pairs[:, 1]) if val in self.all_maxes]
         self.selected_maxes = [int(val) for val in np.unique(persistance_pairs[:, 1]) if val in self.all_mins]
         self.selected_extremum = self.selected_mins + self.selected_maxes
-        boundary_triangles = self.get_boundary_triangles(level_set_threshold)
-        self.color_to_boundary(boundary_triangles)
+        self.boundary_triangles = self.get_boundary_triangles(level_set_threshold)
+        if self.isbasemesh:
+            self.color_to_boundary()
+
 
     def get_boundary_triangles(self, level_set_threshold):
         all_boundary_tris = []
@@ -130,8 +170,8 @@ class Segmenter:
         return list(np.unique(np.array(all_boundary_tris)))
 
     def findLevelSetOnMesh(self, saddle, epsilon):
-        target = self.efunc_one[saddle]
-        mask = np.logical_and(self.efunc_one > target - epsilon, self.efunc_one < target + epsilon)
+        target = self.eigenfunctions[:,1][saddle]
+        mask = np.logical_and(self.eigenfunctions[:,1] > target - epsilon, self.eigenfunctions[:,1] < target + epsilon)
         vtxs = np.where(mask == True)[0]
 
         return self.get_level_set_tris(vtxs)
@@ -167,7 +207,7 @@ class Segmenter:
 
     def get_adjacent_vtx_efunc_vals(self, vtx):
         ccw_neighbors = self.get_ccw_neighbor_vtxs(vtx)
-        return self.efunc_one[ccw_neighbors]
+        return self.eigenfunctions[:,1][ccw_neighbors]
 
     def get_ccw_neighbor_vtxs(self, vtx):
         # Mesh is oriented, so each triangle is listed in ccw order
@@ -245,7 +285,7 @@ class Segmenter:
         while current_vtx not in target:
             # Get adjacent vertices
             ccw_neighbors = [neighbor for neighbor in self.get_ccw_neighbor_vtxs(current_vtx) if neighbor not in path]
-            adj_idx_efunc_vals = self.efunc_one[ccw_neighbors]
+            adj_idx_efunc_vals = self.eigenfunctions[:,1][ccw_neighbors]
             # Get next vertex as the one with highest efunc value
             next_vtx = ccw_neighbors[compare(adj_idx_efunc_vals)]
             path.append(next_vtx)
@@ -265,7 +305,7 @@ class Segmenter:
         '''
         pass
 
-    def color_to_boundary(self, boundary_tris):
+    def color_to_boundary(self, ):
         '''
         Breadth first search, marking seen vertices
         Assumes boundary tris segment mesh fully, otherwise the whole mesh will be explored in one call
@@ -275,14 +315,17 @@ class Segmenter:
         '''
         # Color Tracker
         # Color all boundaries
+        num_embedding_dims = 4
         step_ct = 0
         boundary_color = len(self.selected_extremum) + 1
-        self.colors[boundary_tris] = 1
-        self.spectral_colors[(np.inf, np.inf, np.inf, np.inf)] = 0
+        self.colors[self.boundary_triangles] = 1
+        self.spectral_colors[tuple([100000]*num_embedding_dims)] = 0
         if self.animate_colors:
             self.allcolors = deepcopy(self.colors)
         for i, crit in enumerate(self.selected_extremum):
-            self.spectral_colors[self.get_spectral_embedding(crit, 4)] = (i + 1)/boundary_color
+            embedding = self.get_spectral_embedding(crit, num_embedding_dims)
+            self.crit_embeddings[embedding] = crit
+            self.spectral_colors[embedding] = (i + 1)/boundary_color
             color = (i + 1) /boundary_color
             queue = []
             visited = []
@@ -292,7 +335,7 @@ class Segmenter:
             while queue:
                 # Get unvisited triangle
                 tri = queue.pop(0)
-                if tri not in visited and tri not in boundary_tris:
+                if tri not in visited and tri not in self.boundary_triangles:
                     # Visit triangle
                     visited.append(tri)
                     # Color triangle
@@ -300,7 +343,7 @@ class Segmenter:
                     # Get neighboring triangles
                     for candidate_tri in self.get_neighbor_tris(tri):
                         # Add to queue if unvisited and not a boundary triangle
-                        if candidate_tri not in visited and candidate_tri not in boundary_tris:
+                        if candidate_tri not in visited and candidate_tri not in self.boundary_triangles:
                             queue.append(candidate_tri)
                 step_ct+=1
                 if self.animate_colors:
@@ -359,18 +402,89 @@ class Segmenter:
 
         output_data["vertices"] = self.vertices
         output_data["triangles"] = self.triangles
-        output_data["eigenfunction"] = self.efunc_one
+        output_data["eigenfunction"] = self.eigenfunctions[:,1]
         output_data["eigenfunctions"]=self.eigenfunctions
 
         output_data["colors"] = self.colors
         if self.animate_colors:
             output_data["allcolors"]=self.allcolors
-        output_file = Path.cwd() / (name + ".mat")
+        output_file = Path.cwd()/"runs" / (name + ".mat")
         savemat(output_file, output_data)
     def display_mesh(self,save_name):
         from LaPy.lapy.Plot import plot_tria_mesh
         plot_tria_mesh(self.mesh,export_png=f"{save_name}.png")
-model = "./off/14.off"
-segmenter = Segmenter(model)
-segmenter.animate_colors = True
-segmenter.run_all("allcolors2")
+
+    def get_critical_points(self):
+        for crit in self.crit_embeddings:
+            try:
+                self.crits.append(CriticalPoint(self.crit_embeddings[crit],crit,color =self.spectral_colors[crit]))
+            except:
+                self.crits.append(CriticalPoint(self.crit_embeddings[crit], crit))
+    def get_crit_embeddings(self):
+        for crit in self.selected_extremum:
+            embedding = self.get_spectral_embedding(crit,4)
+            self.crit_embeddings[embedding] = crit
+
+    def color_to_boundary_matching(self, color_dict,fname):
+        '''
+        Breadth first search, marking seen vertices
+        Assumes boundary tris segment mesh fully, otherwise the whole mesh will be explored in one call
+
+        :param starting_vtx:
+        :return:
+        '''
+        # Color Tracker
+        # Color all boundaries
+        self.colors = np.zeros((self.num_tris,1))
+        step_ct = 0
+        self.colors[self.boundary_triangles] = 1
+        if self.animate_colors:
+            self.allcolors = deepcopy(self.colors)
+        for crit, color in color_dict.items():
+            queue = []
+            visited = []
+            # Get triangles that include starting vtx
+            queue.extend(list(np.where(self.triangles == crit)[0]))
+            # Loop until all possible triangles have been evaluated
+            while queue:
+                # Get unvisited triangle
+                tri = queue.pop(0)
+                if tri not in visited and tri not in self.boundary_triangles:
+                    # Visit triangle
+                    visited.append(tri)
+                    # Color triangle
+                    self.colors[tri] = color
+                    # Get neighboring triangles
+                    for candidate_tri in self.get_neighbor_tris(tri):
+                        # Add to queue if unvisited and not a boundary triangle
+                        if candidate_tri not in visited and candidate_tri not in self.boundary_triangles:
+                            queue.append(candidate_tri)
+                step_ct+=1
+                if self.animate_colors:
+                    if (step_ct%100)==0:
+                        self.allcolors = np.concatenate((self.allcolors,self.colors),axis=1)
+        self.save_to_matlab(fname)
+    def match_segment_colors(self,base_mesh_colors, fname):
+        self.get_crit_embeddings()
+        self.get_critical_points()
+        color_correspondances = {}
+        base_embeddings_array = np.array([list(embedding)for embedding in base_mesh_colors.keys()])
+        for crit in self.crits:
+            candidate = base_embeddings_array - np.array(list(crit.embedding)).reshape(1, 4)
+            norms = np.linalg.norm(candidate, axis=1)
+            closest = np.argmin(norms)
+            closest_embedding = base_embeddings_array[closest]
+            color_correspondances[crit.vertex] = base_mesh_colors[tuple(closest_embedding)]
+            self.color_to_boundary_matching(color_correspondances,fname)
+model4 = "./off/4.off"
+base_mesh = Segmenter(model4)
+lmdict1=base_mesh.run_all("base_mesh")
+base_mesh.get_critical_points()
+
+
+model13 = "./off/13.off"
+segmenter13 = Segmenter(model13)
+segmenter13.isbasemesh=False
+segmenter13.flip_eigenfunctions(base_mesh)
+lmdict2= segmenter13.run_all("")
+segmenter13.match_segment_colors(base_mesh.spectral_colors, "matching")
