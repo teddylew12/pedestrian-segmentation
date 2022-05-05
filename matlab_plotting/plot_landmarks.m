@@ -1,4 +1,4 @@
-s = load('../runs/standing1.mat');
+s = load('../runs/running1.mat');
 tris = s.triangles + 1;
 figure()
 patch('faces',tris,'vertices',s.vertices,'edgecolor','red','facecolor','none');

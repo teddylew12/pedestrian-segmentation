@@ -1,5 +1,7 @@
 import numpy as np
 from LaPy.lapy.TriaIO import import_off
+import numpy as np
+
 from LaPy.lapy import Solver
 from scipy.io import savemat
 from pathlib import Path
@@ -39,14 +41,35 @@ class Segmenter:
         self.allcolors = np.zeros((self.num_tris,1))
         self.spectral_colors = {}
         self.crit_embeddings = {}
+        self.unnormed_crit_embeddings = {}
         self.crits=[]
-
+        self.efs = []
+        self.xyz = []
         ### Visualization Tools
-        self.isbasemesh = True
+        self.isbasemesh = False
         self.animate_colors = False
         assert self.mesh.is_oriented()
+    def run_all2(self,name):
+        if not self.isbasemesh:
+            init_name = name + "_initial"
+            self.save_to_matlab(init_name)
+            self.flip_eigenfunctions()
+        self.get_min_max_saddles()
+        self.construct_MS_complex()
+        self.topological_noise_removal()
+        step = max(self.noise_removal_steps.keys())-3
+        self.get_selected_extremum(step)
+        self.get_crit_embeddings()
+        self.save_landmark_matrix()
+        if name:
+            self.save_to_matlab(name)
+            self.oscar_save(name)
 
     def run_all(self,name):
+        if not self.isbasemesh:
+            init_name = name + "_initial"
+            self.save_to_matlab(init_name)
+            self.flip_eigenfunctions()
         self.get_min_max_saddles()
         self.construct_MS_complex()
         self.topological_noise_removal()
@@ -55,10 +78,12 @@ class Segmenter:
         self.segment(step, threshold)
         if name:
             self.save_to_matlab(name)
-        landmark_dict = self.get_landmarks()
+        self.save_landmark_matrix()
+        #landmark_dict = self.get_landmarks()
         #print(landmark_dict)
-        return landmark_dict
-    def flip_eigenfunctions(self, base_mesh):
+        #return landmark_dict
+
+    def flip_eigenfunctions(self):
         '''
         Pseudocode
         For Each eigenfunction of the current mesh
@@ -68,7 +93,7 @@ class Segmenter:
 
         :param base_mesh:
         :return:
-        '''
+
         for i in range(self.eigenfunctions.shape[1]):
             if i==0:
                 continue
@@ -80,7 +105,12 @@ class Segmenter:
             flipped_dist = np.linalg.norm(max_on_base_shape-flipped_max_on_current_shape)
             if flipped_dist<main_dist:
                 self.eigenfunctions[:,i] = -1 * self.eigenfunctions[:,i]
-        self.eigenfunctions[:,2] = -1 * self.eigenfunctions[:,2]
+        '''
+        for i in range(1,5):
+            inp = input(f"Flip eigenfunction {i}?")
+            if inp == "y":
+                print(f"Flipping eigenfunction {i}")
+                self.eigenfunctions[:,i] *= -1
 
 
 
@@ -161,7 +191,12 @@ class Segmenter:
         if self.isbasemesh:
             self.color_to_boundary()
 
-
+    def get_selected_extremum(self, step):
+        persistance_pairs = self.noise_removal_steps[step]
+        self.selected_saddles = [int(val) for val in np.unique(persistance_pairs[:, 0])]
+        self.selected_mins = [int(val) for val in np.unique(persistance_pairs[:, 1]) if val in self.all_maxes]
+        self.selected_maxes = [int(val) for val in np.unique(persistance_pairs[:, 1]) if val in self.all_mins]
+        self.selected_extremum = self.selected_mins + self.selected_maxes
     def get_boundary_triangles(self, level_set_threshold):
         all_boundary_tris = []
         for saddle in self.selected_saddles:
@@ -324,7 +359,9 @@ class Segmenter:
             self.allcolors = deepcopy(self.colors)
         for i, crit in enumerate(self.selected_extremum):
             embedding = self.get_spectral_embedding(crit, num_embedding_dims)
+            un_normed = self.eigenfunctions[crit, 1:num_embedding_dims + 1]
             self.crit_embeddings[embedding] = crit
+            self.unnormed_crit_embeddings[tuple(un_normed)]=crit
             self.spectral_colors[embedding] = (i + 1)/boundary_color
             color = (i + 1) /boundary_color
             queue = []
@@ -406,6 +443,9 @@ class Segmenter:
         output_data["eigenfunctions"]=self.eigenfunctions
 
         output_data["colors"] = self.colors
+
+        output_data["efs"] = self.efs
+        output_data["xyz"] = self.xyz
         if self.animate_colors:
             output_data["allcolors"]=self.allcolors
         output_file = Path.cwd()/"runs" / (name + ".mat")
@@ -424,6 +464,8 @@ class Segmenter:
         for crit in self.selected_extremum:
             embedding = self.get_spectral_embedding(crit,4)
             self.crit_embeddings[embedding] = crit
+            un_normed = self.eigenfunctions[crit, 1:4 + 1]
+            self.unnormed_crit_embeddings[tuple(un_normed)] = crit
 
     def color_to_boundary_matching(self, color_dict,fname):
         '''
@@ -476,15 +518,43 @@ class Segmenter:
             closest_embedding = base_embeddings_array[closest]
             color_correspondances[crit.vertex] = base_mesh_colors[tuple(closest_embedding)]
             self.color_to_boundary_matching(color_correspondances,fname)
-model4 = "./off/4.off"
-base_mesh = Segmenter(model4)
-lmdict1=base_mesh.run_all("base_mesh")
-base_mesh.get_critical_points()
+    def save_landmark_matrix(self):
+        eps = .075
+        all_coords = []
+        for embedding, point in self.unnormed_crit_embeddings.items():
+            these_coords = list(embedding)
+            these_coords.extend(list(self.vertices[point]))
+            all_coords.append(these_coords)
+        be = np.array(all_coords)
+        be = be[np.argsort(be[:,0])]
+        for row in range(be.shape[0]-1):
+            col = 0
+            if np.abs(be[row,col]-be[row+1,col])<eps and col <=4:
+                while np.abs(be[row,col]-be[row+1,col])<eps:
+                    col+=1
+                if be[row,col] > be[row+1,col]:
+                    be[[row,row+1]] = be[[row+1,row]]
+
+        self.efs= be[:,:4]
+        self.xyz =  be[:,4:]
+
+    def oscar_save(self,name):
+        data = np.concatenate((self.efs,self.xyz),axis=1)
+        np.savetxt(name+".csv", data, delimiter=",")
+#base_mesh = Segmenter("./off/stand.off")
+#np.savetxt("base_verts.csv",base_mesh.vertices,delimiter=",")
+#base_mesh.isbasemesh=True
+#base_mesh.run_all2("standing1")
+#np.savetxt("base_efuncs.csv",base_mesh.eigenfunctions[:,1:5],delimiter=",")
+#np.savetxt("base_tris.csv",base_mesh.triangles,delimiter=",")
+
+#sit = Segmenter("./off/sit.off")
+#sit.run_all2("sitting1")
+
+run = Segmenter("./off/run.off")
+run.run_all2("running1")
+
+#run = Segmenter("./off/lying.off")
+#run.run_all2("lying1")
 
 
-model13 = "./off/13.off"
-segmenter13 = Segmenter(model13)
-segmenter13.isbasemesh=False
-segmenter13.flip_eigenfunctions(base_mesh)
-lmdict2= segmenter13.run_all("")
-segmenter13.match_segment_colors(base_mesh.spectral_colors, "matching")

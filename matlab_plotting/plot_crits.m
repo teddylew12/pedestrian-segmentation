@@ -1,5 +1,5 @@
 
-s = load('../runs/4_compare8.mat');
+s = load('../runs/diffstand_0.mat');
 tris = s.triangles + 1;
 figure()
 patch('faces',tris,'vertices',s.vertices,'facevertexcdata',s.eigenfunctions(:,2),'edgecolor','none','facecolor','interp');
