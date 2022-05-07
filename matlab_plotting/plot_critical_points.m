@@ -1,8 +1,8 @@
-
-s = load('../runs/diffstand_0.mat');
+s = load('../off/base_mesh.mat');
 tris = s.triangles + 1;
 figure()
 patch('faces',tris,'vertices',s.vertices,'facevertexcdata',s.eigenfunctions(:,2),'edgecolor','none','facecolor','interp');
+view(-180,-90)
 hold on;
 
 all_mins = s.all_mins' + 1;
@@ -23,11 +23,12 @@ saddle_vtxs = s.vertices(all_mins, :);
 select_saddles = s.select_saddles' + 1;
 ssaddle_vtxs = s.vertices(select_saddles, :);
 
-
+%Unfilled points are noisy initial critical points
 scatter3(min_vtxs(:,1),min_vtxs(:,2),min_vtxs(:,3), 'bo');
 scatter3(max_vtxs(:,1),max_vtxs(:,2),max_vtxs(:,3), 'ro');
 scatter3(saddle_vtxs(:,1),saddle_vtxs(:,2),saddle_vtxs(:,3), 'go');
-
+%Filled points are the selected critical points after topological noise
+%removal
 scatter3(smin_vtxs(:,1),smin_vtxs(:,2),smin_vtxs(:,3), 'bo','filled');
 scatter3(smax_vtxs(:,1),smax_vtxs(:,2),smax_vtxs(:,3), 'ro','filled');
 scatter3(ssaddle_vtxs(:,1),ssaddle_vtxs(:,2),ssaddle_vtxs(:,3), 'go','filled');
