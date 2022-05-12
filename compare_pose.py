@@ -26,7 +26,7 @@ segmenter.get_landmark_matrix()
 segmenter.color_mesh()
 segmenter.save_to_matlab()
 
-#OSCAR I NEED YOUR HELP HERE
+# Fixed 5.12.22 13:30 -- Oscar
 #Should output a string from ["sitting", "standing", "running","lying_down"]
 closest_pose = segmenter.get_closest_matching_pose()
 print(f"The closest pose to the unknown mesh is {closest_pose}")
