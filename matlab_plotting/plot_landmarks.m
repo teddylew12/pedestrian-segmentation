@@ -1,9 +1,7 @@
 s = load('../off/base_mesh.mat');
 tris = s.triangles + 1;
 figure()
-view(-180,90)
-subplot(1,2,1)
-patch('faces',tris,'vertices',s.vertices,'edgecolor','red','facecolor','none');
+patch('faces',tris,'vertices',s.vertices,'facevertexcdata', s.eigenfunctions(:,2),'edgecolor','none','facecolor','interp');
 hold on;
 
 xyz = s.landmark_matrix(:,5:7);
