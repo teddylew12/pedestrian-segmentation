@@ -3,10 +3,13 @@ from LaPy.lapy import Solver
 import numpy as np
 from scipy.io import savemat
 from sklearn.preprocessing import MinMaxScaler
+from proctrustes import ProcrustesComp
+import os
 
 class Segmenter:
     def __init__(self, off_filename, results_dir):
         self.results_dir = results_dir
+        print(off_filename)
         self.mesh = import_off(off_filename)
         self.vertices = self.mesh.v
         self.triangles = self.mesh.t
@@ -135,7 +138,7 @@ class Segmenter:
                 if landmark[row,col] > landmark[row+1,col]:
                     landmark[[row,row+1]] = landmark[[row+1,row]]
         self.full_landmark_matrix = landmark
-        self.landmark_points_matrix = landmark[4:7]
+        self.landmark_points_matrix = landmark[:, 4:7]
 
     def get_boundary_triangles(self):
         all_boundary_tris = []
@@ -313,6 +316,43 @@ class Segmenter:
 
         output_file = self.results_dir / "base_mesh.mat"
         savemat(output_file, output_data)
+    
+
+    def get_closest_matching_pose(self):
+        target_pose = self.landmark_points_matrix
+       
+        poses_dict = {}
+        for file in os.listdir(os.path.join(os.getcwd(), 'pose_dictionary_landmarks')):
+            if file != '.DS_Store':
+                f_num = file[:file.index('.')]
+                landmark_vals_coords = np.genfromtxt(os.path.join(os.getcwd(), 'pose_dictionary_landmarks', file), delimiter=',')
+                parts = np.hsplit(landmark_vals_coords, [4])
+                coords = parts[1]
+                if f_num == '4' or f_num == '13' or f_num=='17' or f_num=='99':
+                    poses_dict[str(f_num)] = coords
+                else:
+                    print('Unidentified landmark pose in file!: ' + str(f_num))
+       
+                poses_dict[str(f_num)] = coords
+        
+        pc = ProcrustesComp()
+        
+        matches = pc.findBestMatch(poses_dict, target_pose)
+        mse = [matches[i][0] for i in range(len(matches))]
+        best = np.argmin(mse)
+
+        pose = list(poses_dict.keys())[best]
+        if str(pose) == '4':
+            return "running"
+        elif str(pose) ==  '13':
+            return "standing"
+        elif str(pose) == '17':
+            return "sitting"
+        elif str(pose) == '99':
+            return "laying down"
+        else:
+            print('hmmm matching didnt go right')
+            return -1
 
 
 
