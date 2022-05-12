@@ -27,6 +27,6 @@ segmenter.color_mesh()
 segmenter.save_to_matlab()
 
 # Fixed 5.12.22 13:30 -- Oscar
-#Should output a string from ["sitting", "standing", "running","lying_down"]
+#Should output a string from ["sitting", "standing", "running","laying down"]
 closest_pose = segmenter.get_closest_matching_pose()
 print(f"The closest pose to the unknown mesh is {closest_pose}")
